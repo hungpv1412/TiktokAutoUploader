@@ -1,5 +1,9 @@
 from .cookies import load_cookies_from_file, save_cookies_to_file
 from fake_useragent import UserAgent, FakeUserAgentError
+
+# Apply compatibility patches before importing undetected_chromedriver
+from . import chromedriver_patch
+
 import undetected_chromedriver as uc
 import threading, os
 
@@ -26,11 +30,31 @@ class Browser:
             Browser.__instance = self
         self.user_agent = ""
         options = uc.ChromeOptions()
+        
+        # Add headless mode and performance optimizations
+        options.add_argument('--headless=new')  # New headless mode
+        options.add_argument('--disable-gpu')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument('--disable-extensions')
+        options.add_argument('--disable-images')  # Don't load images for speed
+        options.add_argument('--window-size=1280,720')  # Smaller window for speed
+        options.add_argument('--disable-web-security')
+        options.add_argument('--disable-features=VizDisplayCompositor')
+        options.add_argument('--disable-software-rasterizer')
+        
+        # Memory optimization
+        options.add_argument('--memory-pressure-off')
+        options.add_argument('--aggressive-cache-discard')
+        options.add_argument('--disable-background-timer-throttling')
+        
         # Proxies not supported on login.
         # if WITH_PROXIES:
         #     options.add_argument('--proxy-server={}'.format(PROXIES[0]))
         self._driver = uc.Chrome(options=options)
-        self.with_random_user_agent()
+        # Skip user agent randomization in headless mode for speed
+        # self.with_random_user_agent()
 
     def with_random_user_agent(self, fallback=None):
         """Set random user agent.

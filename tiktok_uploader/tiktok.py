@@ -7,6 +7,7 @@ from tiktok_uploader.Browser import Browser
 from tiktok_uploader.bot_utils import *
 from tiktok_uploader import Config, Video, eprint
 from dotenv import load_dotenv
+from datetime import datetime as dt
 
 
 # Load environment variables
@@ -46,13 +47,25 @@ def login(login_name: str):
 
 
 # Local Code...
-def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, allow_duet=0, allow_stitch=0, visibility_type=0, brand_organic_type=0, branded_content_type=0, ai_label=0, proxy=None):
+def log_time(message):
+	"""Log message with timestamp"""
+	print(f"[{dt.now().strftime('%H:%M:%S.%f')[:-3]}] {message}")
+
+def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, allow_duet=0, allow_stitch=0, visibility_type=0, brand_organic_type=0, branded_content_type=0, ai_label=0, proxy=None, network_optimizer=None):
+	upload_start = time.time()
+	log_time("Upload function started")
+	
+	# Store network optimizer for use in HTTP requests
+	global _network_optimizer
+	_network_optimizer = network_optimizer
+	
 	try:
 		user_agent = UserAgent().random
 	except FakeUserAgentError as e:
 		user_agent = _UA
 		print("[-] Could not get random user agent, using default")
 
+	log_time("Loading cookies")
 	cookies = load_cookies_from_file(f"tiktok_session-{session_user}")
 	session_id = next((c["value"] for c in cookies if c["name"] == 'sessionid'), None)
 	dc_id = next((c["value"] for c in cookies if c["name"] == 'tt-target-idc'), None)
@@ -66,7 +79,7 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 	print("User successfully logged in.")
 	print(f"Tiktok Datacenter Assigned: {dc_id}")
 	
-	print("Uploading video...")
+	log_time("Starting video upload process")
 	# Parameter validation,
 	if schedule_time and (schedule_time > 864000 or schedule_time < 900):
 		print("[-] Cannot schedule video in more than 10 days or less than 20 minutes")
@@ -81,8 +94,13 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 	# Check video length - 1 minute max, takes too long to run this.
 
 
-	# Creating Session
-	session = requests.Session()
+	# Creating optimized Session
+	if network_optimizer:
+		log_time("Using optimized HTTP session for upload")
+		session = network_optimizer.create_optimized_session()
+	else:
+		session = requests.Session()
+	
 	session.cookies.set("sessionid", session_id, domain=".tiktok.com")
 	session.cookies.set("tt-target-idc", dc_id, domain=".tiktok.com")
 	session.verify = True
@@ -286,6 +304,8 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 	if schedule_time > 0:
 		data["feature_common_info_list"][0]["schedule_time"] = schedule_time + int(time.time())
 	
+	log_time("Starting video publish process")
+	publish_start = time.time()
 	uploaded = False
 	while True:
 		mstoken = session.cookies.get("msToken")
@@ -324,7 +344,8 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 			return False
 
 		if r.json()["status_code"] == 0:
-			print(f"Published successfully {'| Scheduled for ' + str(schedule_time) if schedule_time else ''}")
+			log_time(f"Published successfully in {time.time()-publish_start:.1f}s {'| Scheduled for ' + str(schedule_time) if schedule_time else ''}")
+			log_time(f"Total upload function time: {time.time()-upload_start:.1f}s")
 			uploaded = True
 			break
 		else:
@@ -366,10 +387,13 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 
 
 def upload_to_tiktok(video_file, session):
+	log_time("Getting upload auth token")
+	auth_start = time.time()
 	url = "https://www.tiktok.com/api/v1/video/upload/auth/?aid=1988"
 	r = session.get(url)
 	if not assert_success(url, r):
 		return False
+	log_time(f"Auth token received in {time.time()-auth_start:.1f}s")
 
 	aws_auth = AWSSigV4(
 		"vod",
@@ -378,16 +402,24 @@ def upload_to_tiktok(video_file, session):
 		aws_secret_access_key=r.json()["video_token_v5"]["secret_acess_key"],
 		aws_session_token=r.json()["video_token_v5"]["session_token"],
 	)
+	log_time("Reading video file")
+	read_start = time.time()
 	with open(os.path.join(os.getcwd(), Config.get().videos_dir, video_file), "rb") as f:
 		video_content = f.read()
 	file_size = len(video_content)
+	log_time(f"Video file read in {time.time()-read_start:.1f}s, size: {file_size/1024/1024:.1f}MB")
+	log_time("Getting upload URL")
+	upload_url_start = time.time()
 	url = f"https://www.tiktok.com/top/v1?Action=ApplyUploadInner&Version=2020-11-19&SpaceName=tiktok&FileType=video&IsInner=1&FileSize={file_size}&s=g158iqx8434"
 
 	r = session.get(url, auth=aws_auth)
 	if not assert_success(url, r):
 		return False
+	log_time(f"Upload URL received in {time.time()-upload_url_start:.1f}s")
 
 	# upload chunks
+	log_time("Starting chunk upload")
+	chunk_start = time.time()
 	upload_node = r.json()["Result"]["InnerUploadAddress"]["UploadNodes"][0]
 	video_id = upload_node["Vid"]
 	store_uri = upload_node["StoreInfos"][0]["StoreUri"]
@@ -402,6 +434,7 @@ def upload_to_tiktok(video_file, session):
 		i += chunk_size
 	crcs = []
 	upload_id = str(uuid.uuid4())
+	log_time(f"Uploading {len(chunks)} chunks of {chunk_size/1024/1024:.1f}MB each")
 	for i in range(len(chunks)):
 		chunk = chunks[i]
 		crc = crc32(chunk)
@@ -415,7 +448,12 @@ def upload_to_tiktok(video_file, session):
 		}
 
 		r = session.post(url, headers=headers, data=chunk)
+		if i == 0:
+			log_time(f"First chunk uploaded")
+		if i == len(chunks) - 1:
+			log_time(f"All {len(chunks)} chunks uploaded in {time.time()-chunk_start:.1f}s")
 
+	log_time(f"Video upload to CDN complete in {time.time()-auth_start:.1f}s")
 	return video_id, session_key, upload_id, crcs, upload_host, store_uri, video_auth, aws_auth
 
 

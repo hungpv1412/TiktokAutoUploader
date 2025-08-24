@@ -2,7 +2,11 @@ import argparse
 from tiktok_uploader import tiktok, Video
 from tiktok_uploader.basics import eprint
 from tiktok_uploader.Config import Config
+from tiktok_uploader.network_utils import NetworkOptimizer
+from tiktok_uploader.system_tuner import SystemNetworkTuner
 import sys, os
+import time
+from datetime import datetime
 
 if __name__ == "__main__":
     _ = Config.load("./config.txt")
@@ -29,6 +33,12 @@ if __name__ == "__main__":
     upload_parser.add_argument("-bc", "--brandcontent", type=int, default=0)
     upload_parser.add_argument("-ai", "--ailabel", type=int, default=0)
     upload_parser.add_argument("-p", "--proxy", default="")
+    upload_parser.add_argument("--fast", action='store_true', help="Enable fast mode - skip MoviePy processing when possible")
+    upload_parser.add_argument("--dns", choices=['auto', 'cloudflare', 'google', 'quad9', 'opendns'], default='auto', help="DNS server to use for faster lookups")
+    upload_parser.add_argument("--benchmark", action='store_true', help="Run network benchmark and show optimization recommendations")
+    upload_parser.add_argument("--fast-net", action='store_true', help="Enable all network optimizations")
+    upload_parser.add_argument("--tune-system", action='store_true', help="Apply system-level network tuning (requires sudo/admin)")
+    upload_parser.add_argument("--tune-dry-run", action='store_true', help="Show system tuning commands without executing them")
 
     # Show cookies
     show_parser = subparsers.add_parser("show", help="Show users and videos available for system.")
@@ -47,6 +57,10 @@ if __name__ == "__main__":
         tiktok.login(login_name)
 
     elif args.subcommand == "upload":
+        # Start timing the entire upload process
+        total_start = time.time()
+        print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === Starting upload process ===")
+        
         # Obtain session id from the cookie name.
         if not hasattr(args, 'users') or args.users is None:
             parser.error("The 'cookie' argument is required for the 'upload' subcommand.")
@@ -59,11 +73,47 @@ if __name__ == "__main__":
             eprint("Both -v and -yt flags cannot be used together.")
             sys.exit(1)
 
+        # Handle network optimization flags
+        network_optimizer = None
+        
+        # System tuning
+        if getattr(args, 'tune_system', False) or getattr(args, 'tune_dry_run', False):
+            system_tuner = SystemNetworkTuner()
+            dry_run = getattr(args, 'tune_dry_run', False)
+            system_tuner.apply_optimizations(dry_run=dry_run)
+            if not dry_run:
+                system_tuner.create_persistent_config()
+            sys.exit(0)
+        
+        # Network benchmark
+        if getattr(args, 'benchmark', False):
+            network_optimizer = NetworkOptimizer()
+            network_optimizer.benchmark_network()
+            # Also show system tuning recommendations
+            system_tuner = SystemNetworkTuner()
+            system_tuner.benchmark_current_settings()
+            sys.exit(0)
+        
+        # Initialize network optimizer if DNS or fast-net options are used
+        if getattr(args, 'dns', 'auto') != 'auto' or getattr(args, 'fast_net', False):
+            network_optimizer = NetworkOptimizer()
+            
+            # If fast-net is enabled, run benchmark to get optimal settings
+            if getattr(args, 'fast_net', False):
+                print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Fast network mode enabled - optimizing...")
+                network_optimizer.benchmark_network()
+
         if args.youtube:
-            video_obj = Video(args.youtube, args.title)
-            video_obj.is_valid_file_format()
+            # Pass fast mode flag to Video class
+            skip_moviepy = getattr(args, 'fast', False)
+            video_obj = Video(args.youtube, args.title, skip_moviepy=skip_moviepy, network_optimizer=network_optimizer, dns_choice=getattr(args, 'dns', 'auto'))
+            # Only validate format if we're using MoviePy
+            if not skip_moviepy:
+                video_obj.is_valid_file_format()
             video = video_obj.source_ref
             args.video = video
+            # Properly close the video object to avoid cleanup exceptions
+            video_obj.close()
         else:
             if not os.path.exists(os.path.join(os.getcwd(), Config.get().videos_dir, args.video)) and args.video:
                 print("[-] Video does not exist")
@@ -73,7 +123,11 @@ if __name__ == "__main__":
                     print(f'[-] {name}')
                 sys.exit(1)
 
-        tiktok.upload_video(args.users, args.video,  args.title, args.schedule, args.comment, args.duet, args.stitch, args.visibility, args.brandorganic, args.brandcontent, args.ailabel, args.proxy)
+        print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Starting TikTok upload")
+        upload_start = time.time()
+        tiktok.upload_video(args.users, args.video,  args.title, args.schedule, args.comment, args.duet, args.stitch, args.visibility, args.brandorganic, args.brandcontent, args.ailabel, args.proxy, network_optimizer=network_optimizer)
+        print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Upload completed in {time.time()-upload_start:.1f}s")
+        print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === Total time: {time.time()-total_start:.1f}s ===")
 
     elif args.subcommand == "show":
         # if flag is c then show cookie names

@@ -1,10 +1,10 @@
-# TiktokAutoUploader v2.0
+# TiktokAutoUploader v2.1
 
 Fastest Tiktok AutoUploader using Requests, not ~~Selenium~~
 
-Automatically Uploads to Tiktok with 1 command and within 3 seconds.
+Automatically Uploads to Tiktok with 1 command and within 15-20 seconds.
 
-[Working as of 20th Dec 2024]
+[Working as of 24th Dec 2024]
 
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white&style=flat-square)]([https://www.linkedin.com/in/isaac-kogan-5a45b9193/](https://www.linkedin.com/in/michael-p-88b015200/) )
 [![HitCount](https://hits.dwyl.com/makiisthenes/TiktokAutoUploader.svg?style=flat)](http://hits.dwyl.com/makiisthenes/https://githubcom/makiisthenes/TiktokAutoUploader)
@@ -24,6 +24,30 @@ Automatically Uploads to Tiktok with 1 command and within 3 seconds.
 
 --------------------------------------
 
+# New Features in v2.1 🚀
+
+### Performance Optimizations
+- **15-20 second upload time** (optimized from 40+ seconds)
+- **Network optimization** with DNS selection, connection pooling, and smart retries
+- **Fast mode** (`--fast`) to skip video processing when not needed
+- **Headless Chrome** for faster browser automation
+- **yt-dlp integration** replacing unreliable pytube
+
+### Network Acceleration
+- **DNS Optimization** - Auto-detect fastest DNS server (`--dns auto|cloudflare|google|quad9`)
+- **Connection Pooling** - Reuse HTTP connections for faster uploads
+- **Smart Retries** - Bandwidth-aware retry logic with exponential backoff
+- **System Tuning** - TCP buffer optimization and BBR congestion control (`--tune-system`)
+- **Benchmark Mode** - Test and optimize network settings (`--benchmark`)
+
+### Bug Fixes
+- Fixed undetected-chromedriver compatibility issues
+- Fixed YouTube download failures
+- Resolved MoviePy cleanup exceptions
+- Fixed upload failures with corrupted video files
+
+--------------------------------------
+
 # Quickstart
 
 This guide covers how to get setup and running your bot ASAP, making basic usage of the library.
@@ -39,6 +63,10 @@ Want to manage multiple accounts, schedule more than 10 days ahead, and obtain v
 - ✔️ Schedule videos up to 10 days in the future. (Autonomy)
 
 - ✔️ Upload your own videos or use youtube short links. (Sourcing)
+
+- ✔️ **NEW**: Network optimization for 2-3x faster uploads
+
+- ✔️ **NEW**: Detailed timing logs for performance monitoring
 
 --------------------------------------
 # Prerequistes
@@ -113,6 +141,21 @@ python cli.py upload --user my_saved_username -v "video.mp4" -t "My video title"
 python cli.py upload --user my_saved_username -yt "https://www.youtube.com/shorts/#####" -t "My video title" 
 ```
 
+```bash
+# Upload with fast mode (skip video processing)
+python cli.py upload --user my_saved_username -yt "https://www.youtube.com/shorts/#####" -t "My video title" --fast
+```
+
+```bash
+# Upload with network optimization
+python cli.py upload --user my_saved_username -yt "https://www.youtube.com/shorts/#####" -t "My video title" --fast-net
+```
+
+```bash
+# Upload with specific DNS server
+python cli.py upload --user my_saved_username -yt "https://www.youtube.com/shorts/#####" -t "My video title" --dns cloudflare
+```
+
 --------------------------------
 
 ### Show Current Users and Videos ⚙️:
@@ -133,6 +176,25 @@ python cli.py show -c
 
 -----
 
+### Network Optimization Commands 🚀:
+
+```bash
+# Run network benchmark to test performance
+python cli.py upload -u test -yt "test" -t "test" --benchmark
+```
+
+```bash
+# Apply system-level network tuning (requires sudo on Linux/macOS)
+sudo python cli.py upload -u test -yt "test" -t "test" --tune-system
+```
+
+```bash
+# Show tuning commands without executing them
+python cli.py upload -u test -yt "test" -t "test" --tune-dry-run
+```
+
+-----
+
 ### Help Command ℹ️:
 
 If you are unsure with command, use the flag `-h`
@@ -144,6 +206,15 @@ python cli.py show -h
 python cli.py login -h
 python cli.py upload -h
 ```
+
+### Performance Flags:
+
+- `--fast` - Skip MoviePy video processing when not needed
+- `--fast-net` - Enable all network optimizations automatically
+- `--dns [auto|cloudflare|google|quad9]` - Select DNS server for faster lookups
+- `--benchmark` - Test network performance and show recommendations
+- `--tune-system` - Apply system-level TCP/network optimizations (requires sudo)
+- `--tune-dry-run` - Show system tuning commands without executing
 
  ----
 

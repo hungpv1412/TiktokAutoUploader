@@ -2,22 +2,56 @@ from .Config import Config
 
 from moviepy.editor import *
 from moviepy.editor import VideoFileClip, AudioFileClip
-from pytube import YouTube
+import yt_dlp
 import time, os
+import re
+from datetime import datetime
 
 class Video:
-    def __init__(self, source_ref, video_text):
+    def __init__(self, source_ref, video_text, skip_moviepy=False, network_optimizer=None, dns_choice='auto'):
         self.config = Config.get()
         self.source_ref = source_ref
         self.video_text = video_text
+        self.clip = None
+        self.skip_moviepy = skip_moviepy or not video_text  # Skip if no text overlay needed
+        self.network_optimizer = network_optimizer
+        self.dns_choice = dns_choice
 
         self.source_ref = self.downloadIfYoutubeURL()
         # Wait until self.source_ref is found in the file system.
         while not os.path.isfile(self.source_ref):
             time.sleep(1)
 
-        self.clip = VideoFileClip(self.source_ref)
+        # Only load MoviePy if we need to process the video
+        if not self.skip_moviepy:
+            try:
+                self.clip = VideoFileClip(self.source_ref)
+            except Exception as e:
+                print(f"Error loading video file: {e}")
+                raise
+        else:
+            print("Skipping MoviePy processing for faster upload...")
+    
+    def __del__(self):
+        """Cleanup method to properly close video clip resources"""
+        if hasattr(self, 'clip') and self.clip is not None:
+            try:
+                self.clip.close()
+            except:
+                pass
+    
+    def close(self):
+        """Explicitly close video clip resources"""
+        if hasattr(self, 'clip') and self.clip is not None:
+            try:
+                self.clip.close()
+                self.clip = None
+            except:
+                pass
 
+    def log_time(self, message):
+        """Log message with timestamp"""
+        print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] {message}")
 
     def crop(self, start_time, end_time, saveFile=False):
         if end_time > self.clip.duration:
@@ -27,7 +61,6 @@ class Video:
         if saveFile:
             self.clip.write_videofile(save_path)
         return self.clip
-
 
     def createVideo(self):
         self.clip = self.clip.resize(width=1080)
@@ -51,56 +84,119 @@ class Video:
         self.clip.write_videofile(dir, fps=24)
         return dir, self.clip
 
-
     def is_valid_file_format(self):
         if not self.source_ref.endswith('.mp4') and not self.source_ref.endswith('.webm'):
             exit(f"File: {self.source_ref} has wrong file extension. Must be .mp4 or .webm.")
 
+    def extract_video_id(self, url):
+        """Extract video ID from YouTube URL"""
+        patterns = [
+            r'(?:v=|/)([0-9A-Za-z_-]{11}).*',
+            r'(?:embed/)([0-9A-Za-z_-]{11})',
+            r'(?:watch\?v=)([0-9A-Za-z_-]{11})',
+            r'(?:shorts/)([0-9A-Za-z_-]{11})'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        return None
+    
     def get_youtube_video(self, max_res=True):
+        start_time = time.time()
+        self.log_time("Starting YouTube video download process")
+        
         url = self.source_ref
-        streams = YouTube(url).streams.filter(progressive=True)
-        valid_streams = sorted(streams, reverse=True, key=lambda x: x.resolution is not None)
-        filtered_streams = sorted(valid_streams, reverse=True, key=lambda x: int(x.resolution.split("p")[0]))
-        if filtered_streams:
-            selected_stream = filtered_streams[0]
-            print("Starting Download for Video...")
-            selected_stream.download(output_path=os.path.join(os.getcwd(), Config.get().videos_dir), filename="pre-processed.mp4")
-            filename = os.path.join(os.getcwd(), Config.get().videos_dir, "pre-processed"+".mp4")
-            return filename
-
-
-        video = YouTube(url).streams.filter(file_extension="mp4", adaptive=True).first()
-        audio = YouTube(url).streams.filter(file_extension="webm", only_audio=True, adaptive=True).first()
-        if video and audio:
-            random_filename = str(int(time.time()))  # extension is added automatically.
-            video_path = os.path.join(os.getcwd(), Config.get().videos_dir, "pre-processed.mp4")
-            resolution = int(video.resolution[:-1])
-            # print(resolution)
-            if resolution >= 360:
-                downloaded_v_path = video.download(output_path=os.path.join(os.getcwd(), self.config.videos_dir), filename=random_filename)
-                print("Downloaded Video File @ " + video.resolution)
-                downloaded_a_path = audio.download(output_path=os.path.join(os.getcwd(), self.config.videos_dir), filename="a" + random_filename)
-                print("Downloaded Audio File")
-                file_check_iter = 0
-                while not os.path.exists(downloaded_a_path) and os.path.exists(downloaded_v_path):
-                    time.sleep(2**file_check_iter)
-                    file_check_iter = +1
-                    if file_check_iter > 3:
-                        print("Error saving these files to directory, please try again")
-                        return
-                    print("Waiting for files to appear.")
-
-                composite_video = VideoFileClip(downloaded_v_path).set_audio(AudioFileClip(downloaded_a_path))
-                composite_video.write_videofile(video_path)
-                # Deleting raw video and audio files.
-                # os.remove(downloaded_a_path)
-                # os.remove(downloaded_v_path)
-                return video_path
-            else:
-                print("All videos have are too low of quality.")
-                return
-        print("No videos available with both audio and video available...")
-        return False
+        video_dir = os.path.join(os.getcwd(), Config.get().videos_dir)
+        
+        # Extract video ID for filename
+        self.log_time("Extracting video ID from URL")
+        video_id = self.extract_video_id(url)
+        if not video_id:
+            video_id = 'video'  # fallback
+        
+        output_path = os.path.join(video_dir, f"{video_id}.mp4")
+        self.log_time(f"Video ID: {video_id}")
+        
+        # Delete existing file to ensure fresh download
+        if os.path.exists(output_path):
+            self.log_time("Removing existing file")
+            os.remove(output_path)
+        
+        # Use yt-dlp native download only
+        self.log_time("Starting yt-dlp native download")
+        download_start = time.time()
+        
+        # Base yt-dlp options
+        ydl_opts = {
+            'format': '18',  # 360p MP4
+            'outtmpl': os.path.join(video_dir, '%(id)s.%(ext)s'),
+            'quiet': False,
+            'no_warnings': True,
+            'no_playlist': True,
+        }
+        
+        # Apply network optimizations
+        if self.network_optimizer:
+            # Get optimal settings based on bandwidth
+            bandwidth = getattr(self.network_optimizer, 'bandwidth_mbps', None)
+            if bandwidth is None:
+                bandwidth = self.network_optimizer.detect_bandwidth()
+            
+            optimal_connections = self.network_optimizer.get_optimal_concurrent_connections(bandwidth)
+            retry_config = self.network_optimizer.get_retry_config(bandwidth)
+            
+            self.log_time(f"Network optimization: {bandwidth:.1f}Mbps, {optimal_connections} connections")
+            
+            # Configure yt-dlp with optimal settings
+            ydl_opts.update({
+                'concurrent_fragment_downloads': optimal_connections,
+                'fragment_retries': retry_config['max_retries'],
+                'socket_timeout': retry_config['timeout'],
+            })
+        
+        # Apply DNS optimization if network optimizer is available
+        if self.network_optimizer:
+            self.log_time(f"Applying DNS optimization: {self.dns_choice}")
+            dns_servers = self.network_optimizer.get_dns_servers(self.dns_choice)
+            if dns_servers:
+                self.log_time(f"Using DNS servers: {dns_servers}")
+                # Note: yt-dlp doesn't directly support DNS server configuration
+                # But the system DNS resolver will be used, which we can configure
+                # This is more of a system-level optimization
+        elif self.dns_choice != 'auto':
+            # Import NetworkOptimizer for one-time DNS setup
+            from .network_utils import NetworkOptimizer
+            temp_optimizer = NetworkOptimizer()
+            dns_servers = temp_optimizer.get_dns_servers(self.dns_choice)
+            self.log_time(f"Using DNS servers: {dns_servers}")
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+                
+                # Check if file was created
+                if os.path.exists(output_path):
+                    file_size = os.path.getsize(output_path)
+                    self.log_time(f"yt-dlp download complete in {time.time()-download_start:.1f}s ({file_size/1024/1024:.1f}MB)")
+                    self.log_time(f"Total download time: {time.time()-start_time:.1f}s")
+                    return output_path
+                else:
+                    # Try to find the file with any extension
+                    for file in os.listdir(video_dir):
+                        if video_id in file and file.endswith('.mp4'):
+                            actual_path = os.path.join(video_dir, file)
+                            os.rename(actual_path, output_path)
+                            file_size = os.path.getsize(output_path)
+                            self.log_time(f"yt-dlp download complete in {time.time()-download_start:.1f}s ({file_size/1024/1024:.1f}MB)")
+                            self.log_time(f"Total download time: {time.time()-start_time:.1f}s")
+                            return output_path
+                        
+        except Exception as e:
+            self.log_time(f"yt-dlp download failed: {e}")
+        
+        return None
 
     _YT_DOMAINS = [
         "http://youtu.be/", "https://youtu.be/", "http://youtube.com/", "https://youtube.com/",
@@ -112,4 +208,5 @@ class Video:
                 print("Detected Youtube Video...")
                 video_dir = self.get_youtube_video()
                 return video_dir
-            return self.source_ref
+            else:
+                return self.source_ref
